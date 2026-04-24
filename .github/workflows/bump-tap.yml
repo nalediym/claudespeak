@@ -1,0 +1,53 @@
+name: Bump tap formula
+
+# Fires when a GitHub Release is published. Auto-updates the url + sha256 in
+# nalediym/homebrew-tap/Formula/claudespeak.rb — no manual copying.
+#
+# Setup:
+#   1. Create a fine-grained PAT at https://github.com/settings/personal-access-tokens/new
+#      — Resource owner: nalediym
+#      — Repository access: Only select repositories → homebrew-tap
+#      — Permissions → Contents: Read and write
+#   2. Add as a repo secret HOMEBREW_TAP_TOKEN in this repo
+#      (Settings → Secrets and variables → Actions → New repository secret)
+#
+# After that, cutting a release (`gh release create vX.Y.Z --generate-notes`)
+# automatically updates the tap. Zero manual steps.
+
+on:
+  release:
+    types: [published]
+  # Allow re-running against a specific tag if the release event missed fire.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish (e.g. v0.3.0)
+        required: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: claudespeak
+          formula-path: Formula/claudespeak.rb
+          homebrew-tap: nalediym/homebrew-tap
+          tag-name: ${{ steps.tag.outputs.tag }}
+          download-url: https://github.com/nalediym/claudespeak/archive/refs/tags/${{ steps.tag.outputs.tag }}.tar.gz
+          commit-message: |
+            claudespeak: update to {{version}}
+
+            Automated by bump-tap workflow in nalediym/claudespeak.
+          push-to: nalediym/homebrew-tap
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
