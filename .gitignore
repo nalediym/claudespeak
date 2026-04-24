@@ -1,0 +1,18 @@
+# Never ship real user data — transcripts can leak API keys + internal hostnames.
+/tmp/
+*.log
+*.err
+
+# Config / telemetry from local testing
+telemetry.jsonl
+feedback.jsonl
+reports/
+
+# Editors
+.DS_Store
+.vscode/
+.idea/
+
+# Bun / Node scratch
+node_modules/
+bun.lockb

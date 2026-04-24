@@ -1,0 +1,61 @@
+class Claudespeak < Formula
+  desc "Voice hook for Claude Code that learns when to shut up"
+  homepage "https://github.com/nalediym/claudespeak"
+  url "https://github.com/nalediym/claudespeak/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "REPLACE_WITH_SHA"
+  license "MIT"
+
+  depends_on "bun"
+  depends_on :macos
+
+  def install
+    bin.install "bin/claudespeak"
+
+    libexec.install "bin/feedback.ts"
+    libexec.install "bin/analyzer.ts"
+    libexec.install "hooks/auto-speak.ts"
+
+    (bin/"claudespeak-feedback").write <<~SH
+      #!/bin/bash
+      exec bun "#{libexec}/feedback.ts" "$@"
+    SH
+    (bin/"claudespeak-analyze").write <<~SH
+      #!/bin/bash
+      exec bun "#{libexec}/analyzer.ts" "$@"
+    SH
+    chmod 0755, bin/"claudespeak-feedback"
+    chmod 0755, bin/"claudespeak-analyze"
+
+    (share/"claudespeak").install "commands", "launchd", "examples", "DESIGN.md"
+  end
+
+  def caveats
+    <<~EOS
+      To enable the Stop hook in Claude Code, add this to ~/.claude/settings.json:
+
+          "hooks": {
+            "Stop": [{
+              "hooks": [{
+                "type": "command",
+                "command": "bun #{libexec}/auto-speak.ts",
+                "timeout": 5
+              }]
+            }]
+          }
+
+      Copy slash commands:
+          cp #{share}/claudespeak/commands/*.md ~/.claude/commands/
+
+      Enable the daily analyzer cron:
+          cp #{share}/claudespeak/launchd/com.claudespeak.report.plist.template \\
+             ~/Library/LaunchAgents/com.claudespeak.report.plist
+          launchctl load ~/Library/LaunchAgents/com.claudespeak.report.plist
+
+      In Claude Code, run:  /voice-on
+    EOS
+  end
+
+  test do
+    assert_match "claudespeak", shell_output("#{bin}/claudespeak --help")
+  end
+end

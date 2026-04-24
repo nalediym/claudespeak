@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# claudespeak — 6-tier TTS CLI (the voice hook that learns when to shut up)
+# Tiers: say → mlx → edge-tts → openai → elevenlabs → cartesia
+# Auto-selection: mlx → edge-tts → say (cloud = opt-in only)
+# Usage: claudespeak [options] "message"
+
+set -euo pipefail
+
+MAX_LEN=240
+CONFIG_DIR="${CLAUDESPEAK_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/claudespeak}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Defaults
+ASYNC=false
+VOICE=""
+BACKEND=""
+LANG=""
+MODEL=""
+API_KEY=""
+DUCK=false
+# Apps to duck when DUCK=true. Override via CLAUDESPEAK_DUCK_APPS="Spotify,Music,Podcasts"
+DUCK_APPS="${CLAUDESPEAK_DUCK_APPS:-Spotify,Music}"
+DUCK_DELTA="${CLAUDESPEAK_DUCK_DELTA:-40}"
+
+read_config() {
+  local file="$CONFIG_DIR/$1"
+  if [[ -f "$file" ]]; then
+    tr -d '[:space:]' < "$file"
+  fi
+}
+
+# ── Key resolution: --api-key flag → env var → config file → empty ──
+
+resolve_key() {
+  local env_var="$1" config_file="$2"
+  # CLI flag takes priority
+  if [[ -n "$API_KEY" ]]; then
+    echo "$API_KEY"
+    return
+  fi
+  # Env var next
+  local key="${!env_var:-}"
+  if [[ -n "$key" ]]; then
+    echo "$key"
+    return
+  fi
+  # Config file fallback
+  key="$(read_config "$config_file")"
+  if [[ -n "$key" ]]; then
+    echo "$key"
+    return
+  fi
+}
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v)            VOICE="$2";   shift 2 ;;
+    --backend)     BACKEND="$2"; shift 2 ;;
+    --lang)        LANG="$2";    shift 2 ;;
+    --model)       MODEL="$2";   shift 2 ;;
+    --api-key)     API_KEY="$2"; shift 2 ;;
+    --async)       ASYNC=true;   shift ;;
+    --duck)        DUCK=true;    shift ;;
+    --list-backends)
+      list_backends=true
+      shift
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: claudespeak [options] "message"
+
+Options:
+  -v VOICE       Override voice for the chosen backend
+  --backend BE   Force backend: say, mlx, edge, openai, elevenlabs, cartesia, auto
+  --lang LANG    BCP-47 language tag (e.g. ja, fr, es)
+  --model MODEL  HuggingFace model ID for mlx backend
+  --api-key KEY  API key for cloud backends (overrides env var and config)
+  --async        Non-blocking (run in background)
+  --duck         Lower volume of music apps during speech, restore after
+  --list-backends Show available backends and their status
+  -h, --help     Show this help
+
+Environment:
+  CLAUDESPEAK_DUCK_APPS  Comma-separated app names for --duck (default: Spotify,Music)
+  CLAUDESPEAK_DUCK_DELTA Volume reduction amount 0-100 (default: 40)
+
+Backends (auto-selected in order):
+  Tier 1: macOS say       — instant, offline, robotic
+  Tier 2: mlx-audio       — neural, offline, Apple Silicon Metal GPU
+  Tier 3: edge-tts        — neural, online, no API key
+  Cloud (opt-in only via --backend or config):
+  Tier 4: openai          — OpenAI TTS API ($OPENAI_API_KEY)
+  Tier 5: elevenlabs      — ElevenLabs API ($ELEVEN_API_KEY)
+  Tier 6: cartesia        — Cartesia Sonic API ($CARTESIA_API_KEY)
+
+Config files ($CONFIG_DIR/):
+  backend       Preferred backend (auto|say|mlx|edge|openai|elevenlabs|cartesia)
+  voice         macOS say voice (default: per-language)
+  mlx-voice     mlx-audio voice ID (default: per-language)
+  mlx-model     HuggingFace model (default: mlx-community/Kokoro-82M-bf16)
+  edge-voice    edge-tts voice ID (default: en-US-AriaNeural)
+  oai-key       OpenAI API key (or set $OPENAI_API_KEY)
+  oai-voice     OpenAI voice (default: nova)
+  11-key        ElevenLabs API key (or set $ELEVEN_API_KEY)
+  11-voice      ElevenLabs voice ID
+  cart-key      Cartesia API key (or set $CARTESIA_API_KEY)
+  cart-voice    Cartesia voice ID
+  lang          Default language (default: en-US)
+
+Setup:
+  uv tool install mlx-audio --with "misaki[en,ja,zh]" \
+    --with "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+  uv pip install edge-tts
+EOF
+      exit 0
+      ;;
+    *) break ;;
+  esac
+done
+
+# ── List backends ──
+
+has_mlx() { command -v mlx_audio.tts.generate &>/dev/null; }
+has_say() { command -v say &>/dev/null; }
+has_edge() { command -v edge-tts &>/dev/null; }
+has_curl() { command -v curl &>/dev/null; }
+
+if [[ "${list_backends:-}" == "true" ]]; then
+  echo "Available TTS backends:"
+  echo ""
+  # Tier 1
+  if has_say; then
+    echo "  say          ✅ installed (offline, robotic)"
+  else
+    echo "  say          ❌ not available"
+  fi
+  # Tier 2
+  if has_mlx; then
+    echo "  mlx          ✅ installed (neural, offline, Apple Silicon)"
+  else
+    echo "  mlx          ❌ not installed (uv tool install mlx-audio)"
+  fi
+  # Tier 3
+  if has_edge; then
+    echo "  edge         ✅ installed (neural, online, no API key)"
+  else
+    echo "  edge         ❌ not installed (uv pip install edge-tts)"
+  fi
+  # Tier 4
+  oai_key="$(resolve_key OPENAI_API_KEY oai-key)"
+  if [[ -n "$oai_key" ]]; then
+    echo "  openai       ✅ key configured (cloud, \$OPENAI_API_KEY)"
+  else
+    echo "  openai       ⚠️  no API key (set \$OPENAI_API_KEY or $CONFIG_DIR/oai-key)"
+  fi
+  # Tier 5
+  el_key="$(resolve_key ELEVEN_API_KEY 11-key)"
+  if [[ -n "$el_key" ]]; then
+    echo "  elevenlabs   ✅ key configured (cloud, \$ELEVEN_API_KEY)"
+  else
+    echo "  elevenlabs   ⚠️  no API key (set \$ELEVEN_API_KEY or $CONFIG_DIR/11-key)"
+  fi
+  # Tier 6
+  cart_key="$(resolve_key CARTESIA_API_KEY cart-key)"
+  if [[ -n "$cart_key" ]]; then
+    echo "  cartesia     ✅ key configured (cloud, \$CARTESIA_API_KEY)"
+  else
+    echo "  cartesia     ⚠️  no API key (set \$CARTESIA_API_KEY or $CONFIG_DIR/cart-key)"
+  fi
+  echo ""
+  echo "Auto-selection (backend=auto): mlx → edge → say"
+  echo "Cloud backends are opt-in only (--backend or config file)"
+  exit 0
+fi
+
+# ── Message ──
+
+MSG="${1:-}"
+if [[ -z "$MSG" ]]; then
+  echo "Error: No message provided" >&2
+  exit 1
+fi
+
+# Truncate
+if [[ ${#MSG} -gt $MAX_LEN ]]; then
+  MSG="${MSG:0:237}..."
+fi
+
+# Resolve config
+BACKEND="${BACKEND:-$(read_config backend)}"
+BACKEND="${BACKEND:-auto}"
+LANG="${LANG:-$(read_config lang)}"
+LANG="${LANG:-en-US}"
+
+# ── Voice lookup tables ──
+
+default_mlx_voice() {
+  case "$1" in
+    en*|EN*) echo "af_heart" ;;
+    fr*)     echo "ff_siwis" ;;
+    es*)     echo "ef_dora" ;;
+    ja*)     echo "jf_alpha" ;;
+    zh*)     echo "zf_xiaoxiao" ;;
+    hi*)     echo "hf_alpha" ;;
+    it*)     echo "if_sara" ;;
+    pt*)     echo "pf_dora" ;;
+    *)       echo "af_heart" ;;
+  esac
+}
+
+default_say_voice() {
+  case "$1" in
+    en*)     echo "Flo" ;;
+    fr*)     echo "Sandy" ;;
+    es*)     echo "Flo" ;;
+    ja*)     echo "Kyoko" ;;
+    zh*)     echo "Ting-Ting" ;;
+    hi*)     echo "Lekha" ;;
+    it*)     echo "Alice" ;;
+    pt*)     echo "Luciana" ;;
+    de*)     echo "Anna" ;;
+    ko*)     echo "Yuna" ;;
+    ar*)     echo "Maged" ;;
+    ru*)     echo "Milena" ;;
+    *)       echo "Flo" ;;
+  esac
+}
+
+default_edge_voice() {
+  case "$1" in
+    en*)     echo "en-US-AriaNeural" ;;
+    fr*)     echo "fr-FR-DeniseNeural" ;;
+    es*)     echo "es-ES-ElviraNeural" ;;
+    ja*)     echo "ja-JP-NanamiNeural" ;;
+    zh*)     echo "zh-CN-XiaoxiaoNeural" ;;
+    de*)     echo "de-DE-KatjaNeural" ;;
+    ko*)     echo "ko-KR-SunHiNeural" ;;
+    pt*)     echo "pt-BR-FranciscaNeural" ;;
+    it*)     echo "it-IT-ElsaNeural" ;;
+    *)       echo "en-US-AriaNeural" ;;
+  esac
+}
+
+# ── Audio check (Darwin-only) ──
+
+check_audio() {
+  if ! system_profiler SPAudioDataType 2>/dev/null | grep -q "Output"; then
+    return 1
+  fi
+  return 0
+}
+
+if ! check_audio; then
+  echo "Skipped: no audio device detected" >&2
+  exit 0
+fi
+
+# ── Audio ducking (AppleScript) ──
+#
+# Lowers volume of targeted apps during speech, restores on exit — even if
+# interrupted. Idempotent: missing/not-running apps are silently skipped.
+
+duck_apply() {
+  local delta="$1"  # negative to lower, positive to restore
+  local IFS=,
+  for app in $DUCK_APPS; do
+    osascript -e "tell application \"$app\"
+      if it is running then
+        try
+          set sound volume to (sound volume + ($delta))
+        end try
+      end if
+    end tell" 2>/dev/null || true
+  done
+}
+
+if [[ "$DUCK" == true ]]; then
+  duck_apply "-$DUCK_DELTA"
+  trap 'duck_apply "+$DUCK_DELTA"' EXIT INT TERM
+fi
+
+# ── Backend functions ──
+
+speak_say() {
+  local v="${VOICE:-$(read_config voice)}"
+  v="${v:-$(default_say_voice "$LANG")}"
+  echo "$MSG" | say -v "$v"
+  echo "Backend: say"
+  echo "Voice: $v"
+}
+
+speak_mlx() {
+  local v="${VOICE:-$(read_config mlx-voice)}"
+  local m="${MODEL:-$(read_config mlx-model)}"
+  m="${m:-mlx-community/Kokoro-82M-bf16}"
+  v="${v:-$(default_mlx_voice "$LANG")}"
+  if ! mlx_audio.tts.generate --model "$m" --text "$MSG" --voice "$v" --lang_code "$LANG" --play 2>/dev/null; then
+    echo "mlx-audio failed" >&2
+    return 1
+  fi
+  echo "Backend: mlx"
+  echo "Voice: $v"
+  echo "Model: $m"
+}
+
+speak_edge() {
+  local v="${VOICE:-$(read_config edge-voice)}"
+  v="${v:-$(default_edge_voice "$LANG")}"
+  local tmpfile
+  tmpfile=$(mktemp /tmp/speak-XXXXXX.mp3) || { echo "Error: failed to create temp file" >&2; return 1; }
+  trap "rm -f '$tmpfile'" RETURN
+  if ! edge-tts --text "$MSG" --voice "$v" --write-media "$tmpfile" 2>/dev/null; then
+    echo "edge-tts failed" >&2
+    return 1
+  fi
+  afplay "$tmpfile"
+  echo "Backend: edge-tts"
+  echo "Voice: $v"
+}
+
+speak_openai() {
+  local key
+  key="$(resolve_key OPENAI_API_KEY oai-key)"
+  if [[ -z "$key" ]]; then
+    echo "Error: no OpenAI API key (set \$OPENAI_API_KEY, --api-key, or $CONFIG_DIR/oai-key)" >&2
+    return 1
+  fi
+  local v="${VOICE:-$(read_config oai-voice)}"
+  v="${v:-nova}"
+  local tmpfile
+  tmpfile=$(mktemp /tmp/speak-XXXXXX.mp3) || { echo "Error: failed to create temp file" >&2; return 1; }
+  trap "rm -f '$tmpfile'" RETURN
+  local http_code
+  http_code=$(curl -s -w "%{http_code}" \
+    -o "$tmpfile" \
+    --max-time 30 \
+    "https://api.openai.com/v1/audio/speech" \
+    -H "Authorization: Bearer $key" \
+    -H "Content-Type: application/json" \
+    -d "$(printf '{"model":"tts-1","voice":"%s","input":"%s"}' "$v" "$MSG")")
+  if [[ "$http_code" != "200" ]]; then
+    echo "OpenAI TTS failed (HTTP $http_code)" >&2
+    return 1
+  fi
+  afplay "$tmpfile"
+  echo "Backend: openai"
+  echo "Voice: $v"
+}
+
+speak_elevenlabs() {
+  local key
+  key="$(resolve_key ELEVEN_API_KEY 11-key)"
+  if [[ -z "$key" ]]; then
+    echo "Error: no ElevenLabs API key (set \$ELEVEN_API_KEY, --api-key, or $CONFIG_DIR/11-key)" >&2
+    return 1
+  fi
+  local v="${VOICE:-$(read_config 11-voice)}"
+  v="${v:-21m00Tcm4TlvDq8ikWAM}"  # Rachel — default female
+  local tmpfile
+  tmpfile=$(mktemp /tmp/speak-XXXXXX.mp3) || { echo "Error: failed to create temp file" >&2; return 1; }
+  trap "rm -f '$tmpfile'" RETURN
+  local http_code
+  http_code=$(curl -s -w "%{http_code}" \
+    -o "$tmpfile" \
+    --max-time 30 \
+    "https://api.elevenlabs.io/v1/text-to-speech/$v/stream" \
+    -H "xi-api-key: $key" \
+    -H "Content-Type: application/json" \
+    -d "$(printf '{"text":"%s","model_id":"eleven_turbo_v2"}' "$MSG")")
+  if [[ "$http_code" != "200" ]]; then
+    echo "ElevenLabs failed (HTTP $http_code)" >&2
+    return 1
+  fi
+  afplay "$tmpfile"
+  echo "Backend: elevenlabs"
+  echo "Voice: $v"
+}
+
+speak_cartesia() {
+  local key
+  key="$(resolve_key CARTESIA_API_KEY cart-key)"
+  if [[ -z "$key" ]]; then
+    echo "Error: no Cartesia API key (set \$CARTESIA_API_KEY, --api-key, or $CONFIG_DIR/cart-key)" >&2
+    return 1
+  fi
+  local v="${VOICE:-$(read_config cart-voice)}"
+  v="${v:-a0e99841-438c-4a64-b679-ae501e7d6091}"  # default female
+  local tmpfile
+  tmpfile=$(mktemp /tmp/speak-XXXXXX.mp3) || { echo "Error: failed to create temp file" >&2; return 1; }
+  trap "rm -f '$tmpfile'" RETURN
+  local http_code
+  http_code=$(curl -s -w "%{http_code}" \
+    -o "$tmpfile" \
+    --max-time 30 \
+    "https://api.cartesia.ai/tts/bytes" \
+    -H "X-API-Key: $key" \
+    -H "Cartesia-Version: 2024-06-10" \
+    -H "Content-Type: application/json" \
+    -d "$(printf '{"transcript":"%s","voice":{"mode":"id","id":"%s"},"output_format":{"container":"mp3","bit_rate":128000}}' "$MSG" "$v")")
+  if [[ "$http_code" != "200" ]]; then
+    echo "Cartesia failed (HTTP $http_code)" >&2
+    return 1
+  fi
+  afplay "$tmpfile"
+  echo "Backend: cartesia"
+  echo "Voice: $v"
+}
+
+# ── Auto-selection (cloud never auto-selected) ──
+
+resolve_backend() {
+  if [[ "$BACKEND" != "auto" ]]; then
+    echo "$BACKEND"
+    return
+  fi
+
+  if has_mlx; then echo "mlx"; return; fi
+  if has_edge; then echo "edge"; return; fi
+  if has_say; then echo "say"; return; fi
+
+  echo "none"
+}
+
+RESOLVED="$(resolve_backend)"
+
+# ── Execute with cascading fallback ──
+
+run_speak() {
+  local backend="$1"
+  case "$backend" in
+    say)         speak_say ;;
+    mlx)         speak_mlx || { echo "Falling back..." >&2; run_speak "edge"; } ;;
+    edge)        speak_edge || { echo "Falling back..." >&2; run_speak "say"; } ;;
+    openai)      speak_openai ;;
+    elevenlabs)  speak_elevenlabs ;;
+    cartesia)    speak_cartesia ;;
+    none)
+      echo "Error: No TTS backend available. Install mlx-audio or edge-tts." >&2
+      exit 1
+      ;;
+    *)
+      echo "Error: Unknown backend '$backend'" >&2
+      exit 1
+      ;;
+  esac
+}
+
+if [[ "$ASYNC" == true ]]; then
+  run_speak "$RESOLVED" &
+  ASYNC_LABEL="yes"
+else
+  run_speak "$RESOLVED"
+  ASYNC_LABEL="no"
+fi
+
+echo "Spoken: $MSG"
+echo "Async: $ASYNC_LABEL"
