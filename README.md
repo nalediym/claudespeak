@@ -60,6 +60,10 @@ Run `claudespeak --list-backends` to see which TTS engines are available. macOS 
 
 **Audio ducking (optional):** `--duck` lowers Spotify/Music volume during speech, restores after.
 
+## MCP server (hybrid mode)
+
+An optional MCP server addon (`bin/mcp-server.ts`) runs alongside the Stop hook and exposes `speak`, `get_feedback_stats`, `get_last_analyzer_report`, `tag_feedback`, and `list_voices` to any MCP client (Claude Desktop, Cursor, Zed, or Claude Code itself). Register it with `claude mcp add claudespeak bun ~/.local/bin/.claudespeak-mcp.ts` and see [MCP.md](./MCP.md) for the tool reference and when to prefer MCP over the hook.
+
 ## Compared to other Claude Code voice tools (April 2026)
 
 | | auto-speak | summarize | telemetry | analyzer | kill | preview | multi-backend | cross-platform |

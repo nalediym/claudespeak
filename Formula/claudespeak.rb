@@ -13,7 +13,9 @@ class Claudespeak < Formula
 
     libexec.install "bin/feedback.ts"
     libexec.install "bin/analyzer.ts"
+    libexec.install "bin/mcp-server.ts"
     libexec.install "hooks/auto-speak.ts"
+    libexec.install "package.json"
 
     (bin/"claudespeak-feedback").write <<~SH
       #!/bin/bash
@@ -23,10 +25,16 @@ class Claudespeak < Formula
       #!/bin/bash
       exec bun "#{libexec}/analyzer.ts" "$@"
     SH
+    (bin/"claudespeak-mcp").write <<~SH
+      #!/bin/bash
+      exec bun "#{libexec}/mcp-server.ts" "$@"
+    SH
     chmod 0755, bin/"claudespeak-feedback"
     chmod 0755, bin/"claudespeak-analyze"
+    chmod 0755, bin/"claudespeak-mcp"
 
-    (share/"claudespeak").install "commands", "launchd", "examples", "DESIGN.md"
+    (share/"claudespeak").install "commands", "launchd", "examples",
+                                  "DESIGN.md", "MCP.md"
   end
 
   def caveats
@@ -52,6 +60,13 @@ class Claudespeak < Formula
           launchctl load ~/Library/LaunchAgents/com.claudespeak.report.plist
 
       In Claude Code, run:  /voice-on
+
+      MCP server (hybrid mode, optional):
+          claude mcp add claudespeak bun #{libexec}/mcp-server.ts
+
+      The MCP addon exposes speak / get_feedback_stats /
+      get_last_analyzer_report / tag_feedback / list_voices over stdio.
+      See #{share}/claudespeak/MCP.md for details.
     EOS
   end
 

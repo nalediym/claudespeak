@@ -1,0 +1,17 @@
+{
+  "name": "claudespeak",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice hook for Claude Code that learns when to shut up",
+  "type": "module",
+  "bin": {
+    "claudespeak-mcp": "bin/mcp-server.ts"
+  },
+  "scripts": {
+    "mcp": "bun bin/mcp-server.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

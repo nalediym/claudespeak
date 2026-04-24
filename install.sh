@@ -39,8 +39,9 @@ install_binaries() {
   chmod +x "$BIN_DIR/claudespeak"
 
   # TS CLIs are wrapped as shell shims that exec `bun <path>`.
-  cp "$SRC/bin/feedback.ts"  "$BIN_DIR/.claudespeak-feedback.ts"
-  cp "$SRC/bin/analyzer.ts"  "$BIN_DIR/.claudespeak-analyze.ts"
+  cp "$SRC/bin/feedback.ts"   "$BIN_DIR/.claudespeak-feedback.ts"
+  cp "$SRC/bin/analyzer.ts"   "$BIN_DIR/.claudespeak-analyze.ts"
+  cp "$SRC/bin/mcp-server.ts" "$BIN_DIR/.claudespeak-mcp.ts"
 
   cat >"$BIN_DIR/claudespeak-feedback" <<EOF
 #!/usr/bin/env bash
@@ -53,6 +54,12 @@ EOF
 exec bun "$BIN_DIR/.claudespeak-analyze.ts" "\$@"
 EOF
   chmod +x "$BIN_DIR/claudespeak-analyze"
+
+  cat >"$BIN_DIR/claudespeak-mcp" <<EOF
+#!/usr/bin/env bash
+exec bun "$BIN_DIR/.claudespeak-mcp.ts" "\$@"
+EOF
+  chmod +x "$BIN_DIR/claudespeak-mcp"
 }
 
 install_hook() {
@@ -82,6 +89,7 @@ Installed:
   $BIN_DIR/claudespeak
   $BIN_DIR/claudespeak-feedback
   $BIN_DIR/claudespeak-analyze
+  $BIN_DIR/claudespeak-mcp
   $HOOK_DIR/claudespeak-auto-speak.ts
   $CMD_DIR/{voice-on,voice-off,speak-*,voice-preview}.md
 
@@ -96,11 +104,20 @@ Next steps:
   4. (Optional) Install neural TTS:  uv pip install edge-tts
                                       uv tool install mlx-audio
   5. In Claude Code: /voice-on
+
+MCP server (hybrid mode, optional):
+  Register the MCP addon to call speak / stats / reports / tag / voices
+  directly from any MCP client (Claude Desktop, Cursor, Zed, claude):
+
+      claude mcp add claudespeak bun $BIN_DIR/.claudespeak-mcp.ts
+
+  See MCP.md for the full tool reference and when to prefer MCP over the
+  Stop hook.
 EOF
 }
 
 uninstall() {
-  rm -f "$BIN_DIR"/{claudespeak,claudespeak-feedback,claudespeak-analyze} \
+  rm -f "$BIN_DIR"/{claudespeak,claudespeak-feedback,claudespeak-analyze,claudespeak-mcp} \
         "$BIN_DIR"/.claudespeak-*.ts
   rm -f "$HOOK_DIR/claudespeak-auto-speak.ts"
   for cmd in voice-on voice-off speak-last speak-kill speak-feedback speak-report voice-preview; do
