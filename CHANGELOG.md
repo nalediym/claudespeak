@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-04-24
 
 - MCP server addon (`bin/mcp-server.ts`) — hybrid mode, runs alongside the
   Stop hook. Exposes 5 tools over stdio: `speak`, `get_feedback_stats`,
@@ -12,7 +12,7 @@
 - Homebrew formula installs `mcp-server.ts` into `libexec` and ships
   `MCP.md` under `share/claudespeak`.
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-04-24
 
 Initial public release.
 
