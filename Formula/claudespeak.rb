@@ -2,7 +2,7 @@ class Claudespeak < Formula
   desc "Voice hook for Claude Code that learns when to shut up"
   homepage "https://github.com/nalediym/claudespeak"
   url "https://github.com/nalediym/claudespeak/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "REPLACE_WITH_SHA"
+  sha256 "a799aeafcfd613b5b0e75a2705dc7532630f9afed699bd2ae7e745096afe0147"
   license "MIT"
 
   depends_on "bun"
